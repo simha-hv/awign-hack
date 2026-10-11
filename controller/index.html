@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- user-scalable=no + maximum-scale: a double-tap zoom mid-match is fatal.
+         viewport-fit=cover so env(safe-area-inset-*) reports real values. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="robots" content="noindex" />
+    <title>Controller</title>
+    <style>
+      /*
+       * The display font is inlined at build time (see buildController in
+       * tools/build.mjs). This page must stay ONE self-contained file — it
+       * loads over congested venue wifi while ten phones scan at once — and a
+       * font request that stalls would leave the pad in a fallback face.
+       */
+      @font-face {
+        font-family: 'Display';
+        src: url(data:font/woff2;base64,__DISPLAY_FONT_B64__) format('woff2');
+        font-display: block;
+      }
+
+      :root {
+        color-scheme: dark;
+        --player: #8a7bc4;
+        --ink: #160a2b;
+        --cream: #fff6e6;
+        --stage: #2a0d52;
+        --stage-deep: #12052a;
+        --yellow: #ffd23d;
+        --pink: #ff3d8b;
+        --cyan: #2ee0ff;
+        --green: #3ddc84;
+        --red: #ff4d4d;
+        --text: #ffffff;
+        --muted: rgba(255, 255, 255, 0.62);
+        /* Clearance for the iOS Safari bottom URL bar. There is no Fullscreen
+           API on iPhone, so the bar is simply always there and the controls
+           have to live above it. */
+        --url-bar: 64px;
+        /* Sized off the SHORT viewport axis: the pad is designed for
+           landscape, where width is the long axis and a vw-based size would
+           blow the cluster up into the stick. */
+        --btn: clamp(84px, 25vmin, 124px);
+      }
+
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        /* Pull-to-refresh reloading a controller mid-match is fatal. */
+        overscroll-behavior: none;
+        overflow: hidden;
+        touch-action: none;
+        position: fixed;
+        inset: 0;
+      }
+      /*
+       * The phone is tinted in its player's colour. Glancing down mid-fight and
+       * seeing a red phone is the fastest possible answer to "which one am I",
+       * faster than reading a name.
+       */
+      body {
+        background:
+          radial-gradient(120vmax 80vmax at 50% 120%, color-mix(in srgb, var(--player) 55%, transparent), transparent 60%),
+          radial-gradient(circle, rgba(255, 255, 255, 0.07) 0 1.6px, transparent 2px) 0 0 / 26px 26px,
+          linear-gradient(180deg, var(--stage), var(--stage-deep));
+        transition: background 0.4s;
+      }
+      .display { font-family: 'Display', ui-sans-serif, system-ui, sans-serif; font-weight: 400; }
+      /* Outlined cartoon type, via stacked shadows so it renders identically
+         on every phone browser (see the host page for why not text-stroke). */
+      .outlined {
+        text-shadow:
+          2px 0 0 var(--ink), -2px 0 0 var(--ink), 0 2px 0 var(--ink), 0 -2px 0 var(--ink),
+          2px 2px 0 var(--ink), -2px 2px 0 var(--ink), 2px -2px 0 var(--ink), -2px -2px 0 var(--ink),
+          0 4px 0 var(--ink);
+      }
+
+      #app {
+        position: fixed;
+        inset: 0;
+        height: 100vh;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        touch-action: none;
+        padding-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--url-bar));
+      }
+
+      /* ------------------------------ header ------------------------------ */
+
+      header {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: calc(env(safe-area-inset-top, 0px) + 12px) 14px 6px;
+      }
+      #statusDot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--muted);
+        border: 2px solid var(--ink);
+        flex: none;
+      }
+      #statusDot[data-tone='ok'] { background: var(--green); }
+      #statusDot[data-tone='warn'] { background: var(--yellow); }
+      #statusDot[data-tone='bad'] { background: var(--red); }
+      #status {
+        flex: 1;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #slot {
+        font-family: 'Display', sans-serif;
+        font-size: 18px;
+        line-height: 1;
+        padding: 5px 12px 4px;
+        color: var(--ink);
+        background: var(--player);
+        border: 3px solid var(--ink);
+        border-radius: 10px;
+        box-shadow: 0 3px 0 var(--ink);
+        transform: rotate(4deg);
+      }
+
+      /* Tapping your name opens the customise sheet. It is a button so it is
+         reachable by keyboard and announced as interactive. */
+      #you {
+        flex: none;
+        align-self: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        font: inherit;
+        background: none;
+        border: 0;
+        padding: 0 16px;
+        color: inherit;
+      }
+      #youLabel {
+        display: inline-block;
+        font-family: 'Display', sans-serif;
+        font-size: 30px;
+        line-height: 1;
+        letter-spacing: 0.02em;
+        padding: 8px 20px 6px;
+        color: var(--ink);
+        background: var(--player);
+        border: 4px solid var(--ink);
+        border-radius: 16px;
+        box-shadow: 0 5px 0 var(--ink);
+        transform: rotate(-2deg);
+        transition: background 0.3s;
+      }
+      #you .edit-hint {
+        margin-top: 9px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        color: var(--muted);
+      }
+
+      /* ------------------------------ game -------------------------------- */
+
+      /* Dim the controls while you are out, so the phone reads as "waiting"
+         at a glance rather than looking broken. Still fully interactive —
+         nothing is disabled, because the next round starts on its own. */
+      #app.out #controls { opacity: 0.3; filter: grayscale(0.8); }
+
+      #gameBanner {
+        position: fixed;
+        left: 0;
+        right: 0;
+        top: 34%;
+        text-align: center;
+        pointer-events: none;
+        z-index: 5;
+      }
+      #gameBanner[hidden] { display: none; }
+      #gameTitle {
+        font-family: 'Display', sans-serif;
+        font-size: 58px;
+        line-height: 1;
+        letter-spacing: 0.02em;
+        color: var(--yellow);
+        animation: punch 0.4s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+      }
+      #gameTitle.count { font-size: 120px; color: var(--player); }
+      @keyframes punch {
+        from { transform: scale(1.8) rotate(-6deg); opacity: 0; }
+        to { transform: none; opacity: 1; }
+      }
+      #gameDetail {
+        display: inline-block;
+        margin-top: 12px;
+        padding: 6px 16px;
+        font-size: 14px;
+        font-weight: 800;
+        color: var(--ink);
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 999px;
+        box-shadow: 0 3px 0 var(--ink);
+      }
+      #gameDetail:empty { display: none; }
+
+      /* The first-few-seconds coach: a speech-bubble sticker that comes down
+         a few seconds into your first round and never comes back. */
+      #coach {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(env(safe-area-inset-bottom, 0px) + var(--url-bar) + 8px);
+        z-index: 6;
+        text-align: center;
+        pointer-events: none;
+        transition: opacity 0.4s;
+      }
+      #coach[hidden] { display: none; }
+      #coach.fading { opacity: 0; }
+      #coachGoal {
+        position: relative;
+        display: inline-block;
+        font-family: 'Display', sans-serif;
+        font-size: 18px;
+        line-height: 1.1;
+        padding: 9px 18px 7px;
+        color: var(--ink);
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 14px;
+        box-shadow: 0 4px 0 var(--ink);
+      }
+      #coachKeys {
+        display: inline-block;
+        margin-top: 9px;
+        padding: 4px 12px;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        color: var(--ink);
+        background: var(--yellow);
+        border: 2px solid var(--ink);
+        border-radius: 999px;
+      }
+
+      /* ---------------------------- landscape ----------------------------- */
+
+      /*
+       * LANDSCAPE IS THE INTENDED WAY TO HOLD THIS: a stick on the left and a
+       * button cluster on the right is a two-thumb layout. We cannot force it
+       * (orientation.lock needs fullscreen and does not exist on iOS), so the
+       * portrait prompt asks and can be dismissed.
+       */
+      @media (orientation: landscape) {
+        :root { --url-bar: 8px; }
+        header { padding: calc(env(safe-area-inset-top, 0px) + 8px) 14px 2px; }
+        #youLabel { font-size: 22px; padding: 6px 16px 4px; border-width: 3px; box-shadow: 0 4px 0 var(--ink); }
+        #you .edit-hint { margin-top: 6px; font-size: 9px; }
+        /* Below the name sticker, in the open middle between the thumbs. */
+        #gameBanner { top: 31%; }
+        /* Kept inside the gap between the stick and the button cluster. */
+        #gameTitle { font-size: min(46px, 6vw); }
+        #gameTitle.count { font-size: 92px; }
+        #gameDetail { font-size: 12px; margin-top: 8px; }
+        #coach { bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); }
+        #coachGoal { font-size: 15px; padding: 7px 14px 5px; }
+        #coachKeys { margin-top: 6px; font-size: 10px; }
+        /* All eight colours on one row: four columns across a landscape phone
+           made each swatch the size of a coaster and pushed the Done button
+           off the bottom of the sheet. */
+        /* Scoped under #sheetPanel so they outrank the base rules, which come
+           later in this file. */
+        #sheetPanel .grid { grid-template-columns: repeat(8, 1fr); gap: 10px; }
+        #sheetPanel { padding-top: 14px; }
+        #sheetPanel .sheet-title { margin: 10px 0 8px; font-size: 18px; }
+        #sheetPanel #sheetClose { margin-top: 16px; padding: 10px; font-size: 19px; }
+      }
+
+      /* ------------------------------ rotate ------------------------------ */
+
+      #rotate {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        background: linear-gradient(180deg, var(--stage), var(--stage-deep));
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        text-align: center;
+        padding: 32px;
+      }
+      @media (orientation: portrait) {
+        #app:not(.portrait-ok) ~ #rotate { display: flex; }
+      }
+      #rotateIcon {
+        width: 74px;
+        height: 118px;
+        background: var(--player);
+        border: 5px solid var(--ink);
+        border-radius: 16px;
+        box-shadow: 0 6px 0 var(--ink);
+        animation: tip 2.2s ease-in-out infinite;
+      }
+      @keyframes tip {
+        0%, 30% { transform: rotate(0deg); }
+        55%, 100% { transform: rotate(-90deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #rotateIcon { animation: none; transform: rotate(-90deg); }
+      }
+      #rotateTitle {
+        font-family: 'Display', sans-serif;
+        font-size: 34px;
+        line-height: 1.05;
+        color: var(--yellow);
+      }
+      #rotateBody {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--muted);
+        max-width: 20em;
+        line-height: 1.45;
+      }
+      #rotateGo {
+        font-family: 'Display', sans-serif;
+        font-size: 26px;
+        padding: 18px 34px 14px;
+        border-radius: 999px;
+        border: 5px solid var(--ink);
+        background: var(--yellow);
+        color: var(--ink);
+        box-shadow: 0 6px 0 var(--ink);
+      }
+      #rotateGo[hidden] { display: none; }
+      #rotateGo:active { transform: translateY(6px); box-shadow: 0 0 0 var(--ink); }
+      #rotateAnyway {
+        margin-top: 4px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 800;
+        padding: 11px 20px;
+        border-radius: 999px;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        background: none;
+        color: var(--muted);
+      }
+
+      /* ---------------------------- customise ----------------------------- */
+
+      #sheet {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        background: rgba(18, 5, 42, 0.72);
+        display: flex;
+        align-items: flex-end;
+      }
+      #sheet[hidden] { display: none; }
+      #sheetPanel {
+        width: 100%;
+        max-height: 88%;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        color: var(--ink);
+        background: var(--cream);
+        border-top: 5px solid var(--ink);
+        border-top-left-radius: 26px;
+        border-top-right-radius: 26px;
+        padding: 20px 20px calc(env(safe-area-inset-bottom, 0px) + 24px);
+        /* The sheet is the one place scrolling is allowed. */
+        touch-action: pan-y;
+        animation: slideUp 0.28s cubic-bezier(0.2, 1.2, 0.4, 1) both;
+      }
+      @keyframes slideUp { from { transform: translateY(40%); opacity: 0; } to { transform: none; opacity: 1; } }
+      .sheet-title {
+        font-family: 'Display', sans-serif;
+        font-size: 20px;
+        margin: 18px 0 10px;
+      }
+      .sheet-title:first-child { margin-top: 4px; }
+      #nameInput {
+        width: 100%;
+        font-family: 'Display', sans-serif;
+        font-size: 24px;
+        padding: 12px 16px 10px;
+        border-radius: 14px;
+        border: 4px solid var(--ink);
+        background: var(--white, #fff);
+        color: var(--ink);
+        box-shadow: 0 4px 0 var(--ink);
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      #nameInput:focus { outline: none; background: #fff; border-color: var(--ink); box-shadow: 0 4px 0 var(--ink), 0 0 0 4px var(--player); }
+      #nameHint { font-size: 12px; font-weight: 700; color: rgba(22, 10, 43, 0.6); margin-top: 10px; min-height: 15px; }
+      #nameHint[data-bad='1'] { color: #d81e5b; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .swatch {
+        position: relative;
+        aspect-ratio: 1;
+        border-radius: 16px;
+        border: 4px solid var(--ink);
+        background: var(--swatch);
+        box-shadow: 0 4px 0 var(--ink);
+        display: grid;
+        place-items: center;
+        padding: 0;
+        font: inherit;
+        transition: transform 0.1s;
+      }
+      .swatch i { display: none; }
+      .swatch:active { transform: translateY(4px); box-shadow: 0 0 0 var(--ink); }
+      .swatch[aria-pressed='true'] { transform: translateY(-3px) rotate(-4deg); box-shadow: 0 7px 0 var(--ink); }
+      .swatch[aria-pressed='true']::before {
+        content: '✓';
+        font-family: 'Display', sans-serif;
+        font-size: 28px;
+        color: var(--ink);
+      }
+      /* Taken by someone else: visibly unavailable, and not tappable. */
+      .swatch[disabled] { opacity: 0.3; box-shadow: none; }
+      .swatch[disabled]::after {
+        content: '';
+        position: absolute;
+        left: 18%;
+        right: 18%;
+        top: calc(50% - 2px);
+        height: 4px;
+        border-radius: 2px;
+        background: var(--ink);
+        transform: rotate(-45deg);
+      }
+      #sheetClose {
+        margin-top: 24px;
+        width: 100%;
+        font-family: 'Display', sans-serif;
+        font-size: 22px;
+        padding: 14px 14px 12px;
+        border-radius: 16px;
+        border: 4px solid var(--ink);
+        background: var(--green);
+        color: var(--ink);
+        box-shadow: 0 5px 0 var(--ink);
+      }
+      #sheetClose:active { transform: translateY(5px); box-shadow: 0 0 0 var(--ink); }
+
+      /* ---------------------------- controls ------------------------------ */
+
+      #controls {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+        touch-action: none;
+      }
+      #stickZone {
+        flex: 1;
+        position: relative;
+        touch-action: none;
+      }
+
+      /*
+       * The stick is drawn AT REST, so it reads as a joystick before anyone
+       * touches it; on contact the base slides to the thumb (transition off
+       * while dragging, so the knob never lags the finger) and eases home
+       * on release.
+       */
+      #stickBase,
+      #stickKnob {
+        position: fixed;
+        top: 0;
+        left: 0;
+        border-radius: 50%;
+        pointer-events: none;
+        will-change: transform;
+        transition: transform 0.18s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.15s;
+      }
+      #stickBase.dragging,
+      #stickKnob.dragging { transition: none; }
+      #stickBase {
+        width: 140px;
+        height: 140px;
+        background:
+          radial-gradient(circle, transparent 54%, rgba(255, 255, 255, 0.06) 55%),
+          rgba(22, 10, 43, 0.55);
+        border: 5px solid var(--ink);
+        box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.14), 0 5px 0 var(--ink);
+      }
+      /* Four chevrons around the ring, so it is unmistakably a direction
+         control rather than one more button. */
+      #stickBase::before,
+      #stickBase::after {
+        content: '';
+        position: absolute;
+        inset: 8px;
+        border-radius: 50%;
+        background:
+          conic-gradient(from -8deg, rgba(255, 255, 255, 0.5) 0 16deg, transparent 16deg 90deg,
+            rgba(255, 255, 255, 0.5) 90deg 106deg, transparent 106deg 180deg,
+            rgba(255, 255, 255, 0.5) 180deg 196deg, transparent 196deg 270deg,
+            rgba(255, 255, 255, 0.5) 270deg 286deg, transparent 286deg);
+        -webkit-mask: radial-gradient(circle, transparent 78%, #000 79%, #000 92%, transparent 93%);
+        mask: radial-gradient(circle, transparent 78%, #000 79%, #000 92%, transparent 93%);
+      }
+      #stickBase::after { display: none; }
+      #stickKnob {
+        width: 76px;
+        height: 76px;
+        background:
+          radial-gradient(circle at 34% 30%, rgba(255, 255, 255, 0.65) 0 12%, transparent 30%),
+          var(--player);
+        border: 5px solid var(--ink);
+        box-shadow: 0 6px 0 var(--ink);
+      }
+      #stickKnob.dragging { box-shadow: 0 2px 0 var(--ink), 0 0 0 8px color-mix(in srgb, var(--player) 35%, transparent); }
+      /* "MOVE" under the resting stick. Fades the moment it is used — it is
+         for the first three seconds, not for the whole match. */
+      #stickLabel {
+        position: fixed;
+        top: 0;
+        left: 0;
+        font-family: 'Display', sans-serif;
+        font-size: 15px;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        pointer-events: none;
+        transform: translate(-50%, -50%);
+        transition: opacity 0.25s;
+      }
+      #stickLabel.used { opacity: 0; }
+
+      #buttons {
+        flex: 1;
+        position: relative;
+        touch-action: none;
+      }
+      /*
+       * Candy buttons, one colour each.
+       *
+       * Fixed per button rather than in the player's colour: a pad where A is
+       * always pink and C always yellow can be operated by colour alone after
+       * one round, which is how people actually hold a controller — thumbs on
+       * the buttons, eyes on the TV.
+       */
+      .btn {
+        position: absolute;
+        width: var(--btn);
+        height: var(--btn);
+        border-radius: 50%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.55) 0 10%, transparent 34%),
+          var(--c);
+        border: 5px solid var(--ink);
+        box-shadow: 0 7px 0 var(--ink);
+        transition: transform 0.05s, box-shadow 0.05s;
+        touch-action: none;
+      }
+      #btnA { --c: var(--pink); }
+      #btnB { --c: var(--cyan); }
+      #btnC { --c: var(--yellow); }
+      .btn .k {
+        font-family: 'Display', sans-serif;
+        font-size: calc(var(--btn) * 0.36);
+      }
+      .btn b {
+        display: block;
+        margin-top: 2px;
+        font-family: 'Display', sans-serif;
+        font-weight: 400;
+        font-size: calc(var(--btn) * 0.13);
+        letter-spacing: 0.06em;
+      }
+      .btn.pressed {
+        transform: translateY(7px);
+        box-shadow: 0 0 0 var(--ink);
+        filter: brightness(1.12);
+      }
+      /* An arc sweeping up and left from the corner, the way a thumb travels.
+         Every offset is a multiple of --btn so the spacing survives the clamp;
+         every pair's centre-to-centre distance exceeds one full diameter:
+           A-B  hypot(1.00, 0.30) = 1.04
+           B-C  hypot(0.70, 0.82) = 1.08
+           A-C  hypot(0.30, 1.12) = 1.16 */
+      #btnA { right: 8px; bottom: 16%; }
+      #btnB { right: calc(var(--btn) * 1.00 + 8px); bottom: calc(16% + var(--btn) * 0.30); }
+      #btnC { right: calc(var(--btn) * 0.30 + 8px); bottom: calc(16% + var(--btn) * 1.12); }
+
+      /* ----------------------------- overlay ------------------------------ */
+
+      #overlay {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(180deg, var(--stage), var(--stage-deep));
+        display: grid;
+        place-items: center;
+        text-align: center;
+        padding: 32px;
+        z-index: 10;
+      }
+      #overlay[hidden] { display: none; }
+      #overlayTitle {
+        font-family: 'Display', sans-serif;
+        font-weight: 400;
+        font-size: 36px;
+        line-height: 1.05;
+        margin: 0 0 12px;
+        color: var(--yellow);
+      }
+      #overlayBody { font-size: 15px; font-weight: 600; color: var(--muted); margin: 0 0 26px; line-height: 1.5; }
+      #overlayAction {
+        font-family: 'Display', sans-serif;
+        font-size: 22px;
+        padding: 13px 30px 11px;
+        border-radius: 16px;
+        border: 4px solid var(--ink);
+        background: var(--yellow);
+        color: var(--ink);
+        box-shadow: 0 5px 0 var(--ink);
+      }
+      #overlayAction:active { transform: translateY(5px); box-shadow: 0 0 0 var(--ink); }
+      #overlayAction[hidden] { display: none; }
+
+      /* ---------------------------- name gate ----------------------------- */
+
+      #nameGate {
+        position: fixed;
+        inset: 0;
+        z-index: 40; /* above the rotate prompt: names are typed in portrait */
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(120vmax 80vmax at 50% 120%, color-mix(in srgb, var(--player) 55%, transparent), transparent 60%),
+          linear-gradient(180deg, var(--stage), var(--stage-deep));
+      }
+      #nameGate[hidden] { display: none; }
+      #nameGateForm {
+        width: min(100%, 380px);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        text-align: center;
+      }
+      #nameGateTitle {
+        font-family: 'Display', sans-serif;
+        font-weight: 400;
+        font-size: 36px;
+        line-height: 1.05;
+        margin: 0 0 8px;
+        color: var(--yellow);
+      }
+      .gate-label { font-size: 14px; font-weight: 700; color: var(--muted); margin-bottom: 18px; }
+      #nameGateInput {
+        width: 100%;
+        font-family: 'Display', sans-serif;
+        font-size: 30px;
+        text-align: center;
+        padding: 14px 16px 12px;
+        border-radius: 16px;
+        border: 4px solid var(--ink);
+        background: #fff;
+        color: var(--ink);
+        box-shadow: 0 5px 0 var(--ink);
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      #nameGateInput::placeholder { color: rgba(22, 10, 43, 0.3); }
+      #nameGateInput:focus { outline: none; box-shadow: 0 5px 0 var(--ink), 0 0 0 5px var(--player); }
+      #nameGateHint { font-size: 12px; font-weight: 700; color: var(--muted); margin: 12px 0 20px; min-height: 15px; }
+      #nameGateHint[data-bad='1'] { color: var(--pink); }
+      #nameGateGo {
+        font-family: 'Display', sans-serif;
+        font-size: 26px;
+        padding: 14px 30px 12px;
+        border-radius: 16px;
+        border: 4px solid var(--ink);
+        background: var(--yellow);
+        color: var(--ink);
+        box-shadow: 0 5px 0 var(--ink);
+      }
+      #nameGateGo:active:not(:disabled) { transform: translateY(5px); box-shadow: 0 0 0 var(--ink); }
+      #nameGateGo:disabled { opacity: 0.45; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div id="statusDot" data-tone="warn"></div>
+        <div id="status">connecting…</div>
+        <div id="slot">—</div>
+      </header>
+
+      <button id="you" type="button">
+        <span id="youLabel">JOINING…</span>
+        <span class="edit-hint" id="editHint" hidden>TAP TO CHANGE</span>
+      </button>
+
+      <div id="controls">
+        <div id="stickZone"></div>
+        <div id="buttons">
+          <div class="btn" id="btnA"><span class="k outlined">A</span><b class="outlined">PUNCH</b></div>
+          <div class="btn" id="btnB"><span class="k outlined">B</span><b class="outlined">GRAB</b></div>
+          <div class="btn" id="btnC"><span class="k outlined">C</span><b class="outlined">JUMP</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="rotate">
+      <div id="rotateIcon"></div>
+      <div id="rotateTitle" class="outlined">Turn your phone sideways!</div>
+      <div id="rotateBody">It's a two-thumb controller.</div>
+      <button id="rotateGo" type="button" hidden>TURN SIDEWAYS</button>
+      <button id="rotateAnyway" type="button">Play in portrait anyway</button>
+    </div>
+
+    <div id="coach" hidden>
+      <span id="coachGoal">Get ready to brawl!</span>
+      <div><span id="coachKeys">DRAG TO MOVE · A PUNCH · B GRAB · C JUMP</span></div>
+    </div>
+
+    <div id="stickBase"></div>
+    <div id="stickKnob"></div>
+    <div id="stickLabel">MOVE</div>
+
+    <div id="gameBanner" hidden>
+      <div id="gameTitle" class="outlined"></div>
+      <div id="gameDetail"></div>
+    </div>
+
+    <div id="sheet" hidden>
+      <div id="sheetPanel">
+        <div class="sheet-title">Your name</div>
+        <input
+          id="nameInput"
+          type="text"
+          inputmode="text"
+          autocomplete="off"
+          autocapitalize="characters"
+          autocorrect="off"
+          spellcheck="false"
+          maxlength="12"
+          placeholder="P1"
+          enterkeyhint="done"
+        />
+        <div id="nameHint"></div>
+
+        <div class="sheet-title">Colour</div>
+        <div class="grid" id="colorGrid"></div>
+
+        <button id="sheetClose" type="button">Back to the game</button>
+      </div>
+    </div>
+
+    <div id="nameGate" hidden>
+      <form id="nameGateForm" autocomplete="off">
+        <h1 id="nameGateTitle" class="outlined">What's your name?</h1>
+        <label for="nameGateInput" class="gate-label">So you can spot yourself on the big screen</label>
+        <input
+          id="nameGateInput"
+          type="text"
+          inputmode="text"
+          autocomplete="off"
+          autocapitalize="characters"
+          autocorrect="off"
+          spellcheck="false"
+          maxlength="12"
+          placeholder="YOUR NAME"
+          enterkeyhint="go"
+        />
+        <div id="nameGateHint"></div>
+        <button id="nameGateGo" type="submit">I'M IN!</button>
+      </form>
+    </div>
+
+    <div id="overlay" hidden>
+      <div>
+        <h1 id="overlayTitle" class="outlined"></h1>
+        <p id="overlayBody"></p>
+        <button id="overlayAction" hidden></button>
+      </div>
+    </div>
+
+    <!-- build inlines the bundle here -->
+    <script>/*__CONTROLLER_BUNDLE__*/</script>
+  </body>
+</html>
